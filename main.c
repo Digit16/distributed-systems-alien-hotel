@@ -29,6 +29,8 @@ typedef enum State {
     INSECTION_GUIDE,     // In section Hotel and in section Guide
 } State;
 
+// current state of the process
+State state = REST;
 
 // process id and number of processes
 int rank;
@@ -52,6 +54,8 @@ int ack_guide_counter = 0;
 
 
 pthread_mutex_t clock_guard = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t state_guard = PTHREAD_MUTEX_INITIALIZER;
+
 
 // send packet scalar and vector clocks
 void send_packet(int dest, Tag tag) {
@@ -61,14 +65,21 @@ void send_packet(int dest, Tag tag) {
     int position = 0;
     MPI_Pack(&scalar_ts, 1, MPI_INT, send_buffer, buffer_size, &position, MPI_COMM_WORLD);
     MPI_Pack(vector_ts, size, MPI_INT, send_buffer, buffer_size, &position, MPI_COMM_WORLD);
+
+    // TODO: add debug message
+
     MPI_Send(send_buffer, position, MPI_PACKED, dest, (int)tag, MPI_COMM_WORLD);
     pthread_mutex_unlock(&clock_guard);
 }
+
 
 // recieve packet with scalar and vector clocks
 void recv_packet(MPI_Status* status) {
     MPI_Recv(recv_buffer, buffer_size, MPI_PACKED, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, status);
     pthread_mutex_lock(&clock_guard);
+
+    // TODO: add debug message
+
     int position = 0;
     int ts;
     MPI_Unpack(recv_buffer, buffer_size, &position, &ts, 1, MPI_INT, MPI_COMM_WORLD);
@@ -82,6 +93,16 @@ void recv_packet(MPI_Status* status) {
 }
 
 
+
+void change_state(State new_state) {
+    pthread_mutex_lock(&state_guard);
+    // TODO: add debug message
+    state = new_state;
+    pthread_mutex_unlock(&state_guard);
+}
+
+
+
 void* listener_loop(void* arg) {
     MPI_Status status;
 
@@ -92,33 +113,48 @@ void* listener_loop(void* arg) {
 
         switch (status.MPI_TAG) {
             case REQ_HOTEL: {
-            // TODO: add request to list
-            send_packet(status.MPI_SOURCE, ACK_HOTEL);
+                // TODO: add request to list
+                send_packet(status.MPI_SOURCE, ACK_HOTEL);
             } break;
             case REQ_GUIDE: {
-            // TODO: add request to list
-            send_packet(status.MPI_SOURCE, ACK_GUIDE);
+                // TODO: add request to list
+                send_packet(status.MPI_SOURCE, ACK_GUIDE);
             } break;
             case ACK_HOTEL: {
-            ++ack_hotel_counter;
+                ++ack_hotel_counter;
             } break;
             case ACK_GUIDE: {
-            ++ack_guide_counter;
+                ++ack_guide_counter;
             } break;
             case RELEASE_HOTEL: {
-            // TODO: remove from requests list
+                // TODO: remove from requests list
             } break;
             case RELEASE_GUIDE: {
-            // TODO: remove from requests list
+                // TODO: remove from requests list
             } break;
             case FINISHED: {
-            ++finished_counter;
+                ++finished_counter;
             } break;
 
-            // TODO: check ack counter conditions
+            
         }
+
+        // TODO: check ack counter conditions
     }
 }
+
+
+
+void* alien_loop(void* arg) {
+
+}
+
+
+
+void* cleaner_loop(void* arg) {
+
+}
+
 
 
 int main(int argc, char** argv) {
