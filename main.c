@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <mpi.h>
 #include <pthread.h>
+#include <string.h>
 
 
 #define MAX(a,b) \
@@ -98,7 +99,7 @@ void remove_request_from_queue(RequestQueue* queue, int source) {
     for (size_t i = 0; i < queue->size; ++i) {
         if (queue->requests[i].source == source) {
             if (i < queue->size - 1)
-                memmove(queue->requests + i + 1, queue->requests + i, queue->size, queue->size - i - 1);
+                memmove(queue->requests + i + 1, queue->requests + i, queue->size - i - 1);
             queue->size--;
             return;
         }
@@ -125,7 +126,7 @@ void send_packet(int dest, Tag tag) {
 // recieve packet with scalar and vector clocks
 int recv_packet(MPI_Status* status) {
 
-    MPI_Recv(recv_buffer, buffer_size, MPI_PACKED, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
+    MPI_Recv(recv_buffer, buffer_size, MPI_PACKED, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, status);
     pthread_mutex_lock(&clock_guard);
 
     // TODO: add debug message
@@ -217,6 +218,21 @@ int main(int argc, char** argv) {
     MPI_Comm_size(MPI_COMM_WORLD, &size);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
+    if (argc != 4) {
+        fprintf(stderr, "Usage: %s <purple_aliens> <blue_aliens> <cleaners>\n", argv[0]);
+        MPI_Finalize();
+        return EXIT_FAILURE;
+    }
+
+    int purple_aliens, blue_aliens, cleaners;
+    if (sscanf(argv[1], "%d", &purple_aliens) != 1 ||
+        sscanf(argv[2], "%d", &blue_aliens) != 1 ||
+        sscanf(argv[3], "%d", &cleaners) != 1) {
+        printf("Error: Please provide valid integers.\n");
+        MPI_Finalize();
+        return EXIT_FAILURE;
+    }
+
     vector_ts = calloc(size * sizeof(int), 0);
     last_received_scalar_ts = calloc(size * sizeof(int), 0);
 
@@ -237,7 +253,6 @@ int main(int argc, char** argv) {
     } else {
         pthread_create(&main_thread, NULL, cleaner_loop, NULL);
     }
-
     pthread_create(&listener_thread, NULL, listener_loop, NULL);
 
 
