@@ -10,7 +10,7 @@
         _a > _b ? _a : _b; })
 
 
-enum Tag {
+typedef enum Tag {
     REQ_HOTEL,
     REQ_GUIDE,
     ACK_HOTEL,
@@ -18,16 +18,16 @@ enum Tag {
     RELEASE_HOTEL,
     RELEASE_GUIDE,
     FINISHED,
-};
+} Tag;
 
 
-enum State {
+typedef enum State {
     REST,                // Waiting
     WAIT_HOTEL,          // Requesting Hotel
     INSECTION_HOTEL,     // In section Hotel
     WAIT_GUIDE,          // Requesting Guide
     INSECTION_GUIDE,     // In section Hotel and in section Guide
-};
+} State;
 
 
 // process id and number of processes
@@ -54,7 +54,7 @@ int ack_guide_counter = 0;
 pthread_mutex_t clock_guard = PTHREAD_MUTEX_INITIALIZER;
 
 // send packet scalar and vector clocks
-void send_packet(int dest, enum Tag tag) {
+void send_packet(int dest, Tag tag) {
     pthread_mutex_lock(&clock_guard);
     ++scalar_ts;
     ++vector_ts[rank];
