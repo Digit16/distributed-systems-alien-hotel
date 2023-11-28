@@ -59,9 +59,51 @@ size_t buffer_size;
 int ack_hotel_counter = 0;
 int ack_guide_counter = 0;
 
-
 pthread_mutex_t clock_guard = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t state_guard = PTHREAD_MUTEX_INITIALIZER;
+
+
+typedef struct RequestInfo {
+    int source;
+    int ts;
+} RequestInfo;
+
+typedef struct RequestQueue {
+    RequestInfo* requests;
+    size_t size;
+
+} RequestQueue;
+
+
+RequestQueue hotel_requests;
+RequestQueue guide_requests;
+
+
+void add_request_to_queue(RequestQueue* queue, RequestInfo request) {
+    size_t i;
+    for (i = 0; i < queue->size; ++i) {
+        if ((queue->requests[i].ts == request.ts && queue->requests[i].source > request.source) || 
+            queue->requests[i].ts > request.ts) {
+            break;
+        }
+    }
+
+    if (i < queue->size)
+        memmove(queue->requests + i, queue->requests + i + 1, queue->size - i);
+    queue->requests[i] = request;
+    queue->size++;
+}
+
+void remove_request_from_queue(RequestQueue* queue, int source) {
+    for (size_t i = 0; i < queue->size; ++i) {
+        if (queue->requests[i].source == source) {
+            if (i < queue->size - 1)
+                memmove(queue->requests + i + 1, queue->requests + i, queue->size, queue->size - i - 1);
+            queue->size--;
+            return;
+        }
+    }
+}
 
 
 // send packet scalar and vector clocks
@@ -81,8 +123,7 @@ void send_packet(int dest, Tag tag) {
 
 
 // recieve packet with scalar and vector clocks
-MPI_Status recv_packet(void) {
-    MPI_Status status;
+int recv_packet(MPI_Status* status) {
 
     MPI_Recv(recv_buffer, buffer_size, MPI_PACKED, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
     pthread_mutex_lock(&clock_guard);
@@ -90,19 +131,20 @@ MPI_Status recv_packet(void) {
     // TODO: add debug message
 
     int position = 0;
-    int ts;
-    MPI_Unpack(recv_buffer, buffer_size, &position, &ts, 1, MPI_INT, MPI_COMM_WORLD);
-    scalar_ts = MAX(scalar_ts, ts) + 1;
-    last_received_scalar_ts[status.MPI_SOURCE] = scalar_ts;
+    int s_ts;
+    int v_ts;
+    MPI_Unpack(recv_buffer, buffer_size, &position, &s_ts, 1, MPI_INT, MPI_COMM_WORLD);
+    scalar_ts = MAX(scalar_ts, s_ts) + 1;
+    last_received_scalar_ts[status->MPI_SOURCE] = scalar_ts;
 
     ++vector_ts[rank];
     for (int i = 0; i < size; ++i) {
-        MPI_Unpack(recv_buffer, buffer_size, &position, &ts, 1, MPI_INT, MPI_COMM_WORLD);
-        vector_ts[i] = MAX(vector_ts[i], ts);
+        MPI_Unpack(recv_buffer, buffer_size, &position, &v_ts, 1, MPI_INT, MPI_COMM_WORLD);
+        vector_ts[i] = MAX(vector_ts[i], v_ts);
     }
     pthread_mutex_unlock(&clock_guard);
     
-    return status;
+    return s_ts;
 }
 
 
@@ -117,18 +159,19 @@ void change_state(State new_state) {
 
 
 void* listener_loop(void* arg) {
+    MPI_Status status;
     int finished_counter = 0;
 
     while(finished_counter < size) {
-        MPI_Status status = recv_packet();
+        int ts = recv_packet(&status);
 
         switch (status.MPI_TAG) {
             case REQ_HOTEL: {
-                // TODO: add request to list
+                add_request_to_queue(&hotel_requests, (RequestInfo){status.MPI_SOURCE, ts});
                 send_packet(status.MPI_SOURCE, ACK_HOTEL);
             } break;
             case REQ_GUIDE: {
-                // TODO: add request to list
+                add_request_to_queue(&guide_requests, (RequestInfo){status.MPI_SOURCE, ts});
                 send_packet(status.MPI_SOURCE, ACK_GUIDE);
             } break;
             case ACK_HOTEL: {
@@ -138,10 +181,10 @@ void* listener_loop(void* arg) {
                 ++ack_guide_counter;
             } break;
             case RELEASE_HOTEL: {
-                // TODO: remove from requests list
+                remove_request_from_queue(&hotel_requests, status.MPI_SOURCE);
             } break;
             case RELEASE_GUIDE: {
-                // TODO: remove from requests list
+                remove_request_from_queue(&hotel_requests, status.MPI_SOURCE);
             } break;
             case FINISHED: {
                 ++finished_counter;
@@ -181,29 +224,35 @@ int main(int argc, char** argv) {
     send_buffer = malloc(buffer_size);
     recv_buffer = malloc(buffer_size);
 
+    hotel_requests = (RequestQueue){malloc(size * sizeof(RequestInfo)), 0};
+    guide_requests = (RequestQueue){malloc(size * sizeof(RequestInfo)), 0};
+
     // TODO: create a function to determine process type
     process_type = ALIEN_BLUE;
 
     pthread_t main_thread, listener_thread;
 
-
     if (process_type == ALIEN_BLUE || process_type == ALIEN_PURPLE) {
-        pthread_create(&main_thread, (void*)0, alien_loop, (void*)0);
+        pthread_create(&main_thread, NULL, alien_loop, NULL);
     } else {
-        pthread_create(&main_thread, (void*)0, cleaner_loop, (void*)0);
+        pthread_create(&main_thread, NULL, cleaner_loop, NULL);
     }
 
-    pthread_create(&listener_thread, (void*)0, listener_loop, (void*)0);
+    pthread_create(&listener_thread, NULL, listener_loop, NULL);
 
 
-    pthread_join(main_thread, (void*)0);
-    pthread_join(listener_thread, (void*)0);
+    pthread_join(main_thread, NULL);
+    pthread_join(listener_thread, NULL);
 
 
     MPI_Finalize();
+
     free(vector_ts);
+    free(last_received_scalar_ts);
     free(send_buffer);
     free(recv_buffer);
+    free(hotel_requests.requests);
+    free(guide_requests.requests);
 
     return EXIT_SUCCESS;
 }
