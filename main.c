@@ -85,9 +85,11 @@ void recv_packet(MPI_Status* status) {
     MPI_Unpack(recv_buffer, buffer_size, &position, &ts, 1, MPI_INT, MPI_COMM_WORLD);
     scalar_ts = MAX(scalar_ts, ts) + 1;
     last_received_scalar_ts[status->MPI_SOURCE] = scalar_ts;
+
+    ++vector_ts[rank];
     for (int i = 0; i < size; ++i) {
         MPI_Unpack(recv_buffer, buffer_size, &position, &ts, 1, MPI_INT, MPI_COMM_WORLD);
-        vector_ts[i] = MAX(vector_ts[i], ts) + 1;
+        vector_ts[i] = MAX(vector_ts[i], ts);
     }
     pthread_mutex_unlock(&clock_guard);
 }
