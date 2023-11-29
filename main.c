@@ -3,6 +3,9 @@
 #include <mpi.h>
 #include <pthread.h>
 #include <string.h>
+#include <stdbool.h>
+#include <unistd.h>
+#include <signal.h>
 
 
 #define MAX(a,b) \
@@ -40,6 +43,12 @@ typedef enum ProcessType {
     CLEANER,
 } ProcessType;
 
+// number of processes
+int purple_aliens, blue_aliens, cleaners;
+
+// number of resources
+int hotels, hotel_capacity;
+
 // current state of the process
 State state = REST;
 ProcessType process_type;
@@ -62,11 +71,17 @@ size_t buffer_size;
 
 // number of received ACK after REQ was sent
 int ack_hotel_counter = 0;
+bool can_enter_hotel = false;
+
 int ack_guide_counter = 0;
+bool can_enter_guide = false;
+
 
 pthread_mutex_t clock_guard = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t state_guard = PTHREAD_MUTEX_INITIALIZER;
 
+pthread_mutex_t signal_guard = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t signal_cond = PTHREAD_COND_INITIALIZER;
 
 typedef struct RequestInfo {
     int source;
@@ -111,8 +126,8 @@ void remove_request_from_queue(RequestQueue* queue, int source) {
 }
 
 
-// send packet scalar and vector clocks
-void send_packet(int dest, Tag tag) {
+// send packet to processed with rank in range
+void send_packet_range(int from_rank, int to_rank, Tag tag) {
     pthread_mutex_lock(&clock_guard);
     ++scalar_ts;
     ++vector_ts[rank];
@@ -121,9 +136,15 @@ void send_packet(int dest, Tag tag) {
     MPI_Pack(vector_ts, size, MPI_INT, send_buffer, buffer_size, &position, MPI_COMM_WORLD);
 
     // TODO: add debug message
-
-    MPI_Send(send_buffer, position, MPI_PACKED, dest, (int)tag, MPI_COMM_WORLD);
+    for (int i = from_rank; i < to_rank; i++)
+        MPI_Send(send_buffer, position, MPI_PACKED, i, (int)tag, MPI_COMM_WORLD);
     pthread_mutex_unlock(&clock_guard);
+}
+
+
+// send packet to single process
+void send_packet(int dest, Tag tag) {
+    send_packet_range(dest, dest, tag);
 }
 
 
@@ -206,12 +227,86 @@ void* listener_loop(void* arg) {
 
 void* alien_loop(void* arg) {
 
+    // each process repeats process n times
+    for (int i = 0; i < 10; i++) {
+
+        // Rest idle
+        change_state(REST);
+        sleep(1);
+
+        // Request hotel
+        can_enter_hotel = false;
+        ack_hotel_counter = 0;
+        send_packet_range(0, size, REQ_HOTEL);
+        change_state(WAIT_HOTEL);
+
+        // Wait for acceptance and enter hotel
+        pthread_mutex_lock(&signal_guard);
+        while (!can_enter_hotel) pthread_cond_wait(&signal_cond, &signal_guard);
+        pthread_mutex_unlock(&signal_guard);
+        
+        // Wait inside of hotel
+        change_state(INSECTION_HOTEL);
+        sleep(1);
+
+        // Request guide
+        can_enter_hotel = false;
+        ack_guide_counter = 0;
+        send_packet_range(0, purple_aliens + blue_aliens, REQ_GUIDE);
+        change_state(WAIT_GUIDE);
+
+        // Wait for acceptance and enter hotel
+        pthread_mutex_lock(&signal_guard);
+        while (!can_enter_guide) pthread_cond_wait(&signal_cond, &signal_guard);
+        pthread_mutex_unlock(&signal_guard);
+
+        // Wait with guide (sightseeing)
+        change_state(INSECTION_GUIDE);
+        sleep(1);
+
+        // Release resources
+        send_packet_range(0, size, RELEASE_HOTEL);
+        send_packet_range(0, purple_aliens + blue_aliens, RELEASE_GUIDE);
+        change_state(REST);
+
+    }
+
+    send_packet_range(0, size, FINISHED);
 }
 
 
 
 void* cleaner_loop(void* arg) {
 
+    // each process repeats process n times
+    for (int i = 0; i < 10; i++) {
+
+        // Rest idle
+        change_state(REST);
+        sleep(1);
+
+        // Request hotel
+        can_enter_hotel = false;
+        ack_hotel_counter = 0;
+        send_packet_range(0, size, REQ_HOTEL);
+        change_state(WAIT_HOTEL);
+
+        // Wait for acceptance and enter hotel
+        pthread_mutex_lock(&signal_guard);
+        while (!can_enter_hotel) pthread_cond_wait(&signal_cond, &signal_guard);
+        pthread_mutex_unlock(&signal_guard);
+        
+        // Wait inside of hotel (cleaning)
+        change_state(INSECTION_HOTEL);
+        sleep(1);
+
+        // Release resources
+        send_packet_range(0, size, RELEASE_HOTEL);
+        change_state(REST);
+
+    }
+
+    send_packet_range(0, size, FINISHED);
 }
 
 
@@ -228,7 +323,6 @@ int main(int argc, char** argv) {
         return EXIT_FAILURE;
     }
 
-    int purple_aliens, blue_aliens, cleaners, hotels, hotel_capacity;
     if (sscanf(argv[1], "%d", &purple_aliens)  != 1 ||
         sscanf(argv[2], "%d", &blue_aliens)    != 1 ||
         sscanf(argv[3], "%d", &cleaners)       != 1 ||
@@ -285,10 +379,7 @@ int main(int argc, char** argv) {
     recv_buffer = malloc(buffer_size);
 
     hotel_requests = (RequestQueue){malloc(size * sizeof(RequestInfo)), 0};
-    guide_requests = (RequestQueue){malloc(size * sizeof(RequestInfo)), 0};
-
-    // TODO: create a function to determine process type
-    process_type = ALIEN_BLUE;
+    guide_requests = (RequestQueue){malloc((purple_aliens + blue_aliens) * sizeof(RequestInfo)), 0};
 
     pthread_t main_thread, listener_thread;
 
