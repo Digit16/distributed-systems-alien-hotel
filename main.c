@@ -224,10 +224,12 @@ int main(int argc, char** argv) {
         return EXIT_FAILURE;
     }
 
-    int purple_aliens, blue_aliens, cleaners;
-    if (sscanf(argv[1], "%d", &purple_aliens) != 1 ||
-        sscanf(argv[2], "%d", &blue_aliens) != 1 ||
-        sscanf(argv[3], "%d", &cleaners) != 1) {
+    int purple_aliens, blue_aliens, cleaners, hotels, hotel_capacity;
+    if (sscanf(argv[1], "%d", &purple_aliens)  != 1 ||
+        sscanf(argv[2], "%d", &blue_aliens)    != 1 ||
+        sscanf(argv[3], "%d", &cleaners)       != 1 ||
+        sscanf(argv[4], "%d", &hotels)         != 1 ||
+        sscanf(argv[5], "%d", &hotel_capacity) != 1) {
         printf("Error: Please provide valid integers.\n");
         MPI_Finalize();
         return EXIT_FAILURE;
