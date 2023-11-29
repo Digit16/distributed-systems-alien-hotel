@@ -12,7 +12,7 @@
 
 #define MAIN_ERROR(...) if (rank == 0) fprintf(stderr, __VA_ARGS__)
 #define ERROR(...) fprintf(stderr, __VA_ARGS__)
-#define DEBUG(...) fprintf(stdout, __VA_ARGS__)
+#define DEBUG(...) ({ printf("DEBUG: "); printf(__VA_ARGS__); })
 
 
 typedef enum Tag {
@@ -239,6 +239,12 @@ int main(int argc, char** argv) {
         return EXIT_FAILURE;
     }
 
+    if (purple_aliens < 0 || blue_aliens < 0 || cleaners < 0 || hotels < 0 || hotel_capacity < 0) {
+        MAIN_ERROR("Error: Please provide non-negative integers.\n");
+        MPI_Finalize();
+        return EXIT_FAILURE;
+    }
+
     const int num_of_processes = purple_aliens + blue_aliens + cleaners;
 
     if (num_of_processes > size) {
@@ -246,8 +252,30 @@ int main(int argc, char** argv) {
         MPI_Finalize();
         return EXIT_FAILURE;
     } else if (num_of_processes < size) {
-        MAIN_ERROR("Warning: Excess processes detected. Currently %d processes, but only %d processes are expected. Continuing normally.\n", size, num_of_processes);
+        MAIN_ERROR("Warning: Excess processes detected. Currently %d processes, but only %d processes are expected. %d processes will be inactive.\n",
+                    size, num_of_processes, size - num_of_processes);
     }
+
+    // Ensure that initialisation Errors/Warning are displayed on top
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    if (rank < purple_aliens) {
+        process_type = ALIEN_PURPLE;
+        DEBUG("Process %d becomes a purple alien.\n", rank);
+    } else if (rank < purple_aliens + blue_aliens) {
+        process_type = ALIEN_BLUE;
+        DEBUG("Process %d becomes a blue alien.\n", rank);
+    } else if (rank < num_of_processes) {
+        process_type = CLEANER;
+        DEBUG("Process %d becomes a cleaner.\n", rank);
+    } else {
+        DEBUG("Process %d finishes due to being inactive.\n", rank);
+        MPI_Finalize();
+        return EXIT_SUCCESS;
+    }
+
+    // Overwrite size with number of active processes
+    size = num_of_processes;
 
     vector_ts = calloc(size * sizeof(int), 0);
     last_received_scalar_ts = calloc(size * sizeof(int), 0);
