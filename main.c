@@ -222,8 +222,24 @@ void* listener_loop(void* arg) {
 
             
         }
-        
 
+        
+        if (state == WAIT_HOTEL && ack_hotel_counter == size && hotel_requests.size > 0 && hotel_requests.requests[0].source == rank) {
+            bool found_smaller = false;
+            for (int i = 0; i < size; ++i) {
+                if (last_received_scalar_ts[i] < hotel_requests.requests[0].ts) {
+                    found_smaller = true;
+                    break;
+                }
+            }
+
+            if (!found_smaller) {
+                pthread_mutex_lock(&signal_guard);
+                can_enter_hotel = true;
+                pthread_cond_signal(&signal_cond, &signal_guard);
+                pthread_mutex_unlock(&signal_guard);
+            }
+        }
         // TODO: check ack counter conditions
     }
 }
