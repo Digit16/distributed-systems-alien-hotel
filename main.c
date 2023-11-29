@@ -10,6 +10,10 @@
         __typeof__ (b) _b = (b); \
         _a > _b ? _a : _b; })
 
+#define MAIN_ERROR(...) if (rank == 0) fprintf(stderr, __VA_ARGS__)
+#define ERROR(...) fprintf(stderr, __VA_ARGS__)
+#define DEBUG(...) fprintf(stdout, __VA_ARGS__)
+
 
 typedef enum Tag {
     REQ_HOTEL,
@@ -219,7 +223,7 @@ int main(int argc, char** argv) {
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
     if (argc != 6) {
-        fprintf(stderr, "Usage: %s <purple_aliens> <blue_aliens> <cleaners> <hotels> <hotel_capacity>\n", argv[0]);
+        MAIN_ERROR("Usage: %s <purple_aliens> <blue_aliens> <cleaners> <hotels> <hotel_capacity>\n", argv[0]);
         MPI_Finalize();
         return EXIT_FAILURE;
     }
@@ -230,9 +234,19 @@ int main(int argc, char** argv) {
         sscanf(argv[3], "%d", &cleaners)       != 1 ||
         sscanf(argv[4], "%d", &hotels)         != 1 ||
         sscanf(argv[5], "%d", &hotel_capacity) != 1) {
-        printf("Error: Please provide valid integers.\n");
+        MAIN_ERROR("Error: Please provide valid integers.\n");
         MPI_Finalize();
         return EXIT_FAILURE;
+    }
+
+    const int num_of_processes = purple_aliens + blue_aliens + cleaners;
+
+    if (num_of_processes > size) {
+        MAIN_ERROR("Error: The number of processes available (%d) is insufficient, expecting %d processes.\n", size, num_of_processes);
+        MPI_Finalize();
+        return EXIT_FAILURE;
+    } else if (num_of_processes < size) {
+        MAIN_ERROR("Warning: Excess processes detected. Currently %d processes, but only %d processes are expected. Continuing normally.\n", size, num_of_processes);
     }
 
     vector_ts = calloc(size * sizeof(int), 0);
@@ -250,16 +264,16 @@ int main(int argc, char** argv) {
 
     pthread_t main_thread, listener_thread;
 
-    if (process_type == ALIEN_BLUE || process_type == ALIEN_PURPLE) {
-        pthread_create(&main_thread, NULL, alien_loop, NULL);
-    } else {
-        pthread_create(&main_thread, NULL, cleaner_loop, NULL);
-    }
-    pthread_create(&listener_thread, NULL, listener_loop, NULL);
+    // if (process_type == ALIEN_BLUE || process_type == ALIEN_PURPLE) {
+    //     pthread_create(&main_thread, NULL, alien_loop, NULL);
+    // } else {
+    //     pthread_create(&main_thread, NULL, cleaner_loop, NULL);
+    // }
+    // pthread_create(&listener_thread, NULL, listener_loop, NULL);
 
 
-    pthread_join(main_thread, NULL);
-    pthread_join(listener_thread, NULL);
+    // pthread_join(main_thread, NULL);
+    // pthread_join(listener_thread, NULL);
 
 
     MPI_Finalize();
