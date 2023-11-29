@@ -14,8 +14,9 @@
         _a > _b ? _a : _b; })
 
 #define MAIN_ERROR(...) if (rank == 0) fprintf(stderr, __VA_ARGS__)
-#define ERROR(...) fprintf(stderr, __VA_ARGS__)
+#define ERROR(...) ({ printf("ERROR: "); printf(__VA_ARGS__); })
 #define DEBUG(...) ({ printf("DEBUG: "); printf(__VA_ARGS__); })
+#define INFO(...) ({ printf("INFO: "); printf(__VA_ARGS__); })
 
 
 typedef enum Tag {
@@ -197,6 +198,7 @@ void* listener_loop(void* arg) {
                 send_packet(status.MPI_SOURCE, ACK_HOTEL);
             } break;
             case REQ_GUIDE: {
+                if (process_type == CLEANER) ERROR("Cleaner process received REQ_GUIDE.");
                 add_request_to_queue(&guide_requests, (RequestInfo){status.MPI_SOURCE, ts});
                 send_packet(status.MPI_SOURCE, ACK_GUIDE);
             } break;
@@ -204,12 +206,14 @@ void* listener_loop(void* arg) {
                 ++ack_hotel_counter;
             } break;
             case ACK_GUIDE: {
+                if (process_type == CLEANER) ERROR("Cleaner process received ACK_GUIDE.");
                 ++ack_guide_counter;
             } break;
             case RELEASE_HOTEL: {
                 remove_request_from_queue(&hotel_requests, status.MPI_SOURCE);
             } break;
             case RELEASE_GUIDE: {
+                if (process_type == CLEANER) ERROR("Cleaner process received RELEASE_GUIDE.");
                 remove_request_from_queue(&hotel_requests, status.MPI_SOURCE);
             } break;
             case FINISHED: {
@@ -218,6 +222,7 @@ void* listener_loop(void* arg) {
 
             
         }
+        
 
         // TODO: check ack counter conditions
     }
