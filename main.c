@@ -236,7 +236,7 @@ void* listener_loop(void* arg) {
             if (!found_smaller) {
                 pthread_mutex_lock(&signal_guard);
                 can_enter_hotel = true;
-                pthread_cond_signal(&signal_cond, &signal_guard);
+                pthread_cond_signal(&signal_cond);
                 pthread_mutex_unlock(&signal_guard);
             }
         }
