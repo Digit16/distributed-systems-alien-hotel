@@ -218,8 +218,8 @@ int main(int argc, char** argv) {
     MPI_Comm_size(MPI_COMM_WORLD, &size);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
-    if (argc != 4) {
-        fprintf(stderr, "Usage: %s <purple_aliens> <blue_aliens> <cleaners>\n", argv[0]);
+    if (argc != 6) {
+        fprintf(stderr, "Usage: %s <purple_aliens> <blue_aliens> <cleaners> <hotels> <hotel_capacity>\n", argv[0]);
         MPI_Finalize();
         return EXIT_FAILURE;
     }
