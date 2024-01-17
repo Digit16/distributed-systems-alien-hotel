@@ -1,7 +1,9 @@
 CC = mpicc
 
-main: main.c
-	$(CC) main.c -o main
+SRC = main.c request_queue.c
+
+main: $(SRC)
+	$(CC) $(SRC) -o main
 
 clean:
 	rm -f main

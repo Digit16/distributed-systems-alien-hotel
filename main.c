@@ -7,48 +7,14 @@
 #include <unistd.h>
 #include <signal.h>
 
-
-#define MAX(a,b) \
-    ({ __typeof__ (a) _a = (a); \
-        __typeof__ (b) _b = (b); \
-        _a > _b ? _a : _b; })
-
-#define MAIN_ERROR(...) if (rank == 0) fprintf(stderr, __VA_ARGS__)
-#define ERROR(...) ({ printf("ERROR: "); printf(__VA_ARGS__); })
-#define DEBUG(...) ({ printf("DEBUG: "); printf(__VA_ARGS__); })
-#define INFO(...) ({ printf("INFO: "); printf(__VA_ARGS__); })
-
-
-typedef enum Tag {
-    REQ_HOTEL,
-    REQ_GUIDE,
-    ACK_HOTEL,
-    ACK_GUIDE,
-    RELEASE_HOTEL,
-    RELEASE_GUIDE,
-    FINISHED,
-} Tag;
-
-
-typedef enum State {
-    REST,                // Waiting
-    WAIT_HOTEL,          // Requesting Hotel
-    INSECTION_HOTEL,     // In section Hotel
-    WAIT_GUIDE,          // Requesting Guide
-    INSECTION_GUIDE,     // In section Hotel and in section Guide
-} State;
-
-typedef enum ProcessType {
-    ALIEN_PURPLE,
-    ALIEN_BLUE,
-    CLEANER,
-} ProcessType;
+#include "request_queue.h"
+#include "utils.h"
 
 // number of processes
-int purple_aliens, blue_aliens, cleaners;
+int num_of_purple_aliens, num_of_blue_aliens, num_of_cleaners;
 
 // number of resources
-int hotels, hotel_capacity;
+int num_of_hotels, hotels_capacity, num_of_guides;
 
 // current state of the process
 State state = REST;
@@ -70,12 +36,9 @@ char* send_buffer;
 char* recv_buffer;
 size_t buffer_size;
 
-// number of received ACK after REQ was sent
-int ack_hotel_counter = 0;
-bool can_enter_hotel = false;
-
-int ack_guide_counter = 0;
-bool can_enter_guide = false;
+// flags for entering critical sections
+bool can_enter_hotel_section = false;
+bool can_enter_guide_section = false;
 
 
 pthread_mutex_t clock_guard = PTHREAD_MUTEX_INITIALIZER;
@@ -84,45 +47,21 @@ pthread_mutex_t state_guard = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t signal_guard = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t signal_cond = PTHREAD_COND_INITIALIZER;
 
-typedef struct RequestInfo {
-    int source;
-    int ts;
-} RequestInfo;
+Queue* hotel_requests;
+Queue* guide_requests;
 
-typedef struct RequestQueue {
-    RequestInfo* requests;
-    size_t size;
+HotelInfo* hotel_info;
+int* hotel_bookings;
 
-} RequestQueue;
-
-
-RequestQueue hotel_requests;
-RequestQueue guide_requests;
-
-
-void add_request_to_queue(RequestQueue* queue, RequestInfo request) {
-    size_t i;
-    for (i = 0; i < queue->size; ++i) {
-        if ((queue->requests[i].ts == request.ts && queue->requests[i].source > request.source) || 
-            queue->requests[i].ts > request.ts) {
-            break;
-        }
-    }
-
-    if (i < queue->size)
-        memmove(queue->requests + i, queue->requests + i + 1, queue->size - i);
-    queue->requests[i] = request;
-    queue->size++;
-}
-
-void remove_request_from_queue(RequestQueue* queue, int source) {
-    for (size_t i = 0; i < queue->size; ++i) {
-        if (queue->requests[i].source == source) {
-            if (i < queue->size - 1)
-                memmove(queue->requests + i + 1, queue->requests + i, queue->size - i - 1);
-            queue->size--;
-            return;
-        }
+ProcessType get_process_type(int process_rank) {
+    if (rank < num_of_purple_aliens) {
+        return PROCESS_PURPLE_ALIEN;
+    } else if (rank < num_of_purple_aliens + num_of_blue_aliens) {
+        return PROCESS_BLUE_ALIEN;
+    } else if (rank < num_of_purple_aliens + num_of_blue_aliens + num_of_cleaners) {
+        return PROCESS_CLEANER;
+    } else {
+        return PROCESS_NONE;
     }
 }
 
@@ -150,9 +89,11 @@ void send_packet(int dest, Tag tag) {
 
 
 // recieve packet with scalar and vector clocks
-int recv_packet(MPI_Status* status) {
+PacketData recv_packet() {
 
-    MPI_Recv(recv_buffer, buffer_size, MPI_PACKED, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, status);
+    MPI_Status status;
+
+    MPI_Recv(recv_buffer, buffer_size, MPI_PACKED, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
     pthread_mutex_lock(&clock_guard);
 
     // TODO: add debug message
@@ -162,16 +103,22 @@ int recv_packet(MPI_Status* status) {
     int v_ts;
     MPI_Unpack(recv_buffer, buffer_size, &position, &s_ts, 1, MPI_INT, MPI_COMM_WORLD);
     scalar_ts = MAX(scalar_ts, s_ts) + 1;
-    last_received_scalar_ts[status->MPI_SOURCE] = scalar_ts;
+    last_received_scalar_ts[status.MPI_SOURCE] = scalar_ts;
 
     ++vector_ts[rank];
     for (int i = 0; i < size; ++i) {
         MPI_Unpack(recv_buffer, buffer_size, &position, &v_ts, 1, MPI_INT, MPI_COMM_WORLD);
         vector_ts[i] = MAX(vector_ts[i], v_ts);
     }
+
     pthread_mutex_unlock(&clock_guard);
     
-    return s_ts;
+    return (PacketData){
+        .source = status.MPI_SOURCE,
+        .process_type = get_process_type(status.MPI_SOURCE),
+        .tag = status.MPI_TAG,
+        .ts = s_ts,
+    };
 }
 
 
@@ -184,64 +131,197 @@ void change_state(State new_state) {
 }
 
 
+bool can_enter_hotel(HotelInfo hotel) {
+    if (hotel.rooms_occupied >= hotels_capacity) {
+        return false;
+    }
+    if (hotel.last_process_type == PROCESS_NONE) {
+        return true;
+    }
 
-void* listener_loop(void* arg) {
-    MPI_Status status;
-    int finished_counter = 0;
+    switch (process_type) {
+        case PROCESS_CLEANER:
+            return hotel.last_process_type != PROCESS_CLEANER;
+        case PROCESS_BLUE_ALIEN:
+            return hotel.last_process_type == PROCESS_BLUE_ALIEN;
+        case PROCESS_PURPLE_ALIEN:
+            return hotel.last_process_type == PROCESS_PURPLE_ALIEN;
+        default:
+            // TODO: add error handling for invalid process type
+    }
+}
 
-    while(finished_counter < size) {
-        int ts = recv_packet(&status);
+void mark_hotel_entry(int process_rank, int hotel_idx) {
+    hotel_info[hotel_idx].rooms_occupied++;
+    hotel_info[hotel_idx].last_process_type = process_type;
 
-        switch (status.MPI_TAG) {
-            case REQ_HOTEL: {
-                add_request_to_queue(&hotel_requests, (RequestInfo){status.MPI_SOURCE, ts});
-                send_packet(status.MPI_SOURCE, ACK_HOTEL);
-            } break;
-            case REQ_GUIDE: {
-                if (process_type == CLEANER) ERROR("Cleaner process received REQ_GUIDE.");
-                add_request_to_queue(&guide_requests, (RequestInfo){status.MPI_SOURCE, ts});
-                send_packet(status.MPI_SOURCE, ACK_GUIDE);
-            } break;
-            case ACK_HOTEL: {
-                ++ack_hotel_counter;
-            } break;
-            case ACK_GUIDE: {
-                if (process_type == CLEANER) ERROR("Cleaner process received ACK_GUIDE.");
-                ++ack_guide_counter;
-            } break;
-            case RELEASE_HOTEL: {
-                remove_request_from_queue(&hotel_requests, status.MPI_SOURCE);
-            } break;
-            case RELEASE_GUIDE: {
-                if (process_type == CLEANER) ERROR("Cleaner process received RELEASE_GUIDE.");
-                remove_request_from_queue(&hotel_requests, status.MPI_SOURCE);
-            } break;
-            case FINISHED: {
-                ++finished_counter;
-            } break;
+    hotel_bookings[process_rank] = hotel_idx;
+}
 
+void mark_hotel_departure(int process_rank) {
+
+    // check in which hotel is the process
+    int hotel_idx = hotel_bookings[process_rank];
+    hotel_bookings[process_rank] = -1;
+    hotel_info[hotel_idx].rooms_occupied--;
+    if (hotel_info[hotel_idx].rooms_occupied == 0) {
+        hotel_info[hotel_idx].last_process_type = PROCESS_NONE;
+    }
+    // todo add error handling
+}
+
+
+void manage_hotel() {
+
+    int min_ts = 0;
+    for (size_t i = 0; i < size; ++i) {
+        min_ts = MIN(min_ts, last_received_scalar_ts[i]);
+    }
+
+    Queue* head = hotel_requests;
+
+    
+    while (head != NULL && ((PacketData*)head->data)->ts <= min_ts) {
+        if (((PacketData*)head->data)->tag == TAG_REQ_HOTEL) {
             
-        }
+            bool entered_hotel = false;
 
-        
-        if (state == WAIT_HOTEL && ack_hotel_counter == size && hotel_requests.size > 0 && hotel_requests.requests[0].source == rank) {
-            bool found_smaller = false;
-            for (int i = 0; i < size; ++i) {
-                if (last_received_scalar_ts[i] < hotel_requests.requests[0].ts) {
-                    found_smaller = true;
-                    break;
+            // loop over all hotels
+            for (size_t hotel_idx = 0; hotel_idx < hotels_capacity; ++hotel_idx) {
+                
+                // check if entry condition was met
+                if (can_enter_hotel(hotel_info[hotel_idx])) {
+
+                    // mark entry to hotel in data structures
+                    mark_hotel_entry(((PacketData*)head->data)->source, hotel_idx);
+                    entered_hotel = true;
+
+                    // if source == rank allow entry in main loop
+                    if (((PacketData*)head->data)->source == rank) {
+                        pthread_mutex_lock(&signal_guard);
+                        can_enter_hotel_section = true;
+                        pthread_cond_signal(&signal_cond);
+                        pthread_mutex_unlock(&signal_guard);
+                    }
+
+                    // remove from packet queue
+                    dequeue(&head);
+
+                    
                 }
             }
 
-            if (!found_smaller) {
-                pthread_mutex_lock(&signal_guard);
-                can_enter_hotel = true;
-                pthread_cond_signal(&signal_cond);
-                pthread_mutex_unlock(&signal_guard);
+            if (!entered_hotel) {
+                return;
             }
+            
+        } else if (((PacketData*)head->data)->tag == TAG_RELEASE_HOTEL) {
+
+            // mark departure from hotel in data structures
+            mark_hotel_departure(((PacketData*)head->data)->source);
+            
+            // TODO: if any requests were skipped check if they can enter now
+
+            dequeue(&head);
+        } else {
+            // TODO: add error message
         }
-        // TODO: check ack counter conditions
     }
+
+}
+
+
+void manage_guide() {
+
+    int guide_queue_position = 0;
+    Queue* head = guide_requests;
+
+    while (head != NULL && guide_queue_position < num_of_guides) {
+
+        // check if our process (source == rank) is in queue
+        if ( ((PacketData*)head->data)->source == rank ) {
+            pthread_mutex_lock(&signal_guard);
+            can_enter_guide_section = true;
+            pthread_cond_signal(&signal_cond);
+            pthread_mutex_unlock(&signal_guard);
+
+            return;
+        }
+
+        guide_queue_position++;
+        head = head->next;
+    }
+}
+
+
+void* alien_listener_loop(void* arg) {
+    int finished_counter = 0;
+
+    while(finished_counter < size) {
+        PacketData received_packet_data = recv_packet();
+
+        switch (received_packet_data.tag) {
+            case TAG_REQ_HOTEL:
+                enqueue_packet(&hotel_requests, received_packet_data);
+                send_packet(received_packet_data.source, TAG_ACK_HOTEL);
+                break;
+            case TAG_REQ_GUIDE:
+                enqueue_packet(&guide_requests, received_packet_data);
+                send_packet(received_packet_data.source, TAG_ACK_GUIDE);
+                break;
+            case TAG_RELEASE_HOTEL:
+                enqueue_packet(&hotel_requests, received_packet_data);
+                break;
+            case TAG_RELEASE_GUIDE:
+                dequeue_matching(&guide_requests, &received_packet_data.source, (Comparison)match_packet_source);
+                break;
+            case TAG_FINISHED:
+                ++finished_counter;
+                break;
+            case TAG_ACK_HOTEL:
+            case TAG_ACK_GUIDE:
+                // ignore
+                break;
+            default:
+                // TODO: error
+        }
+
+
+        manage_hotel();
+        manage_guide();
+    }
+
+    return NULL;
+}
+
+
+void* cleaner_listener_loop(void* arg) {
+    int finished_counter = 0;
+
+    while(finished_counter < size) {
+        PacketData received_packet_data = recv_packet();
+
+        switch (received_packet_data.tag) {
+            case TAG_REQ_HOTEL:
+                enqueue_packet(&hotel_requests, received_packet_data);
+                send_packet(received_packet_data.source, TAG_ACK_HOTEL);
+                break;
+            case TAG_RELEASE_HOTEL:
+                enqueue_packet(&hotel_requests, received_packet_data);
+                break;
+            case TAG_FINISHED:
+                ++finished_counter;
+                break;
+            case TAG_ACK_HOTEL:
+                break;
+            default:
+                // TODO: error
+        }
+
+        manage_hotel();
+    }
+
+    return NULL;
 }
 
 
@@ -256,14 +336,13 @@ void* alien_loop(void* arg) {
         sleep(1);
 
         // Request hotel
-        can_enter_hotel = false;
-        ack_hotel_counter = 0;
-        send_packet_range(0, size, REQ_HOTEL);
+        can_enter_hotel_section = false;
+        send_packet_range(0, size, TAG_REQ_HOTEL);
         change_state(WAIT_HOTEL);
 
         // Wait for acceptance and enter hotel
         pthread_mutex_lock(&signal_guard);
-        while (!can_enter_hotel) pthread_cond_wait(&signal_cond, &signal_guard);
+        while (!can_enter_hotel_section) pthread_cond_wait(&signal_cond, &signal_guard);
         pthread_mutex_unlock(&signal_guard);
         
         // Wait inside of hotel
@@ -271,28 +350,30 @@ void* alien_loop(void* arg) {
         sleep(1);
 
         // Request guide
-        can_enter_hotel = false;
-        ack_guide_counter = 0;
-        send_packet_range(0, purple_aliens + blue_aliens, REQ_GUIDE);
+        can_enter_hotel_section = false;
+        send_packet_range(0, num_of_purple_aliens + num_of_blue_aliens, TAG_REQ_GUIDE);
         change_state(WAIT_GUIDE);
 
         // Wait for acceptance and enter hotel
         pthread_mutex_lock(&signal_guard);
-        while (!can_enter_guide) pthread_cond_wait(&signal_cond, &signal_guard);
+        while (!can_enter_guide_section) pthread_cond_wait(&signal_cond, &signal_guard);
         pthread_mutex_unlock(&signal_guard);
 
         // Wait with guide (sightseeing)
         change_state(INSECTION_GUIDE);
         sleep(1);
 
+
         // Release resources
-        send_packet_range(0, size, RELEASE_HOTEL);
-        send_packet_range(0, purple_aliens + blue_aliens, RELEASE_GUIDE);
+        send_packet_range(0, size, TAG_RELEASE_HOTEL);
+        send_packet_range(0, num_of_purple_aliens + num_of_blue_aliens, TAG_RELEASE_GUIDE);
         change_state(REST);
 
     }
 
-    send_packet_range(0, size, FINISHED);
+    send_packet_range(0, size, TAG_FINISHED);
+
+    return NULL;
 }
 
 
@@ -307,14 +388,13 @@ void* cleaner_loop(void* arg) {
         sleep(1);
 
         // Request hotel
-        can_enter_hotel = false;
-        ack_hotel_counter = 0;
-        send_packet_range(0, size, REQ_HOTEL);
+        can_enter_hotel_section = false;
+        send_packet_range(0, size, TAG_REQ_HOTEL);
         change_state(WAIT_HOTEL);
 
         // Wait for acceptance and enter hotel
         pthread_mutex_lock(&signal_guard);
-        while (!can_enter_hotel) pthread_cond_wait(&signal_cond, &signal_guard);
+        while (!can_enter_hotel_section) pthread_cond_wait(&signal_cond, &signal_guard);
         pthread_mutex_unlock(&signal_guard);
         
         // Wait inside of hotel (cleaning)
@@ -322,45 +402,81 @@ void* cleaner_loop(void* arg) {
         sleep(1);
 
         // Release resources
-        send_packet_range(0, size, RELEASE_HOTEL);
+        send_packet_range(0, size, TAG_RELEASE_HOTEL);
         change_state(REST);
 
     }
 
-    send_packet_range(0, size, FINISHED);
+    send_packet_range(0, size, TAG_FINISHED);
+
+    return NULL;
 }
 
 
+bool match_int(void* a, void* b) {
+    return *(int*)a == *(int*)b;
+}
 
-int main(int argc, char** argv) {
+bool comp_int(int* a, int* b) {
+    return *a >= *b;
+}
+
+
+int main(void) {
+    Queue* items = NULL;
+
+    int a = 1, b = 2, c = 3, d = 4;
+    enqueue(&items, &d, (Comparison)comp_int);
+    enqueue(&items, &c, (Comparison)comp_int);
+    enqueue(&items, &a, (Comparison)comp_int);
+    enqueue(&items, &b, (Comparison)comp_int);
+    
+    
+    
+    
+    // printf("%d\n", *(int*)dequeue(&items));
+    // dequeue(&items);
+
+    // dequeue_matching(&items, &c, &match_int);
+
+    Queue* reqs = items;
+    while (reqs != NULL) {
+        printf("%d\n", *(int*)reqs->data);
+        reqs = reqs->next;
+    }
+}
+
+
+int main2(int argc, char** argv) {
 
     MPI_Init(&argc, &argv);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
-    if (argc != 6) {
-        MAIN_ERROR("Usage: %s <purple_aliens> <blue_aliens> <cleaners> <hotels> <hotel_capacity>\n", argv[0]);
+    if (argc != 7) {
+        MAIN_ERROR("Usage: %s <purple_aliens> <blue_aliens> <cleaners> <hotels> <hotel_capacity> <guides>\n", argv[0]);
         MPI_Finalize();
         return EXIT_FAILURE;
     }
 
-    if (sscanf(argv[1], "%d", &purple_aliens)  != 1 ||
-        sscanf(argv[2], "%d", &blue_aliens)    != 1 ||
-        sscanf(argv[3], "%d", &cleaners)       != 1 ||
-        sscanf(argv[4], "%d", &hotels)         != 1 ||
-        sscanf(argv[5], "%d", &hotel_capacity) != 1) {
+    if (sscanf(argv[1], "%d", &num_of_purple_aliens)  != 1 ||
+        sscanf(argv[2], "%d", &num_of_blue_aliens)    != 1 ||
+        sscanf(argv[3], "%d", &num_of_cleaners)       != 1 ||
+        sscanf(argv[4], "%d", &num_of_hotels)         != 1 ||
+        sscanf(argv[5], "%d", &hotels_capacity) != 1 ||
+        sscanf(argv[6], "%d", &num_of_guides) != 1) {
         MAIN_ERROR("Error: Please provide valid integers.\n");
         MPI_Finalize();
         return EXIT_FAILURE;
     }
 
-    if (purple_aliens < 0 || blue_aliens < 0 || cleaners < 0 || hotels < 0 || hotel_capacity < 0) {
+    if (num_of_purple_aliens < 0 || num_of_blue_aliens < 0 || num_of_cleaners < 0 || num_of_hotels < 0 || hotels_capacity < 0 || num_of_guides < 0) {
         MAIN_ERROR("Error: Please provide non-negative integers.\n");
         MPI_Finalize();
         return EXIT_FAILURE;
     }
 
-    const int num_of_processes = purple_aliens + blue_aliens + cleaners;
+    const int num_of_processes = num_of_purple_aliens + num_of_blue_aliens + num_of_cleaners;
 
     if (num_of_processes > size) {
         MAIN_ERROR("Error: The number of processes available (%d) is insufficient, expecting %d processes.\n", size, num_of_processes);
@@ -374,20 +490,21 @@ int main(int argc, char** argv) {
     // Ensure that initialisation Errors/Warning are displayed on top
     MPI_Barrier(MPI_COMM_WORLD);
 
-    if (rank < purple_aliens) {
-        process_type = ALIEN_PURPLE;
-        DEBUG("Process %d becomes a purple alien.\n", rank);
-    } else if (rank < purple_aliens + blue_aliens) {
-        process_type = ALIEN_BLUE;
-        DEBUG("Process %d becomes a blue alien.\n", rank);
-    } else if (rank < num_of_processes) {
-        process_type = CLEANER;
-        DEBUG("Process %d becomes a cleaner.\n", rank);
-    } else {
+    process_type = get_process_type(rank);
+
+    switch(process_type) {
+    case PROCESS_PURPLE_ALIEN:
+        DEBUG("Process %d becomes a purple alien.\n", rank); break;
+    case PROCESS_BLUE_ALIEN:
+        DEBUG("Process %d becomes a blue alien.\n", rank); break;
+    case PROCESS_CLEANER:
+        DEBUG("Process %d becomes a cleaner.\n", rank); break;
+    default:
         DEBUG("Process %d finishes due to being inactive.\n", rank);
         MPI_Finalize();
         return EXIT_SUCCESS;
     }
+
 
     // Overwrite size with number of active processes
     size = num_of_processes;
@@ -395,12 +512,23 @@ int main(int argc, char** argv) {
     vector_ts = calloc(size * sizeof(int), 0);
     last_received_scalar_ts = calloc(size * sizeof(int), 0);
 
-    buffer_size = (1 + size) * sizeof(int);
+    buffer_size = (1 + size) * sizeof(int) + sizeof(PacketData);
     send_buffer = malloc(buffer_size);
     recv_buffer = malloc(buffer_size);
 
-    hotel_requests = (RequestQueue){malloc(size * sizeof(RequestInfo)), 0};
-    guide_requests = (RequestQueue){malloc((purple_aliens + blue_aliens) * sizeof(RequestInfo)), 0};
+    hotel_info = malloc(sizeof(HotelInfo) * num_of_hotels);
+    for (size_t i = 0; i < num_of_hotels; ++i) {
+        hotel_info[i].rooms_occupied = 0;
+        hotel_info[i].last_process_type = PROCESS_NONE;
+    }
+
+    hotel_bookings = malloc(sizeof(int)*size);
+    for (size_t i = 0; i < size; ++i) {
+        hotel_bookings[i] = -1;
+    }
+
+    // hotel_requests = (RequestQueue){malloc(size * sizeof(RequestInfo)), 0};
+    // guide_requests = (RequestQueue){malloc((purple_aliens + blue_aliens) * sizeof(RequestInfo)), 0};
 
     pthread_t main_thread, listener_thread;
 
@@ -422,8 +550,9 @@ int main(int argc, char** argv) {
     free(last_received_scalar_ts);
     free(send_buffer);
     free(recv_buffer);
-    free(hotel_requests.requests);
-    free(guide_requests.requests);
+    free(hotel_info);
+    // free(hotel_requests.requests);
+    // free(guide_requests.requests);
 
     return EXIT_SUCCESS;
 }
