@@ -13,20 +13,20 @@
         _a < _b ? _a : _b; })
 
 
-#define MAIN_ERROR(...) if (rank == 0) fprintf(stderr, __VA_ARGS__)
-#define ERROR(...) ({ printf("ERROR: "); printf(__VA_ARGS__); })
-#define DEBUG(...) ({ printf("DEBUG: "); printf(__VA_ARGS__); })
-#define INFO(...) ({ printf("INFO: "); printf(__VA_ARGS__); })
+#define MAIN_ERROR(...) if (rank == 0) ({fprintf(stderr, __VA_ARGS__); printf("\n"); })
+#define ERROR(...) ({ printf("ERROR: "); printf(__VA_ARGS__); printf("\n"); })
+#define DEBUG(...) ({ printf("DEBUG: "); printf(__VA_ARGS__); printf("\n"); })
+#define INFO(...) ({ printf("INFO: "); printf(__VA_ARGS__); printf("\n"); })
 
 
 typedef enum Tag {
-    TAG_REQ_HOTEL,
-    TAG_REQ_GUIDE,
-    TAG_ACK_HOTEL,
-    TAG_ACK_GUIDE,
-    TAG_RELEASE_HOTEL,
-    TAG_RELEASE_GUIDE,
-    TAG_FINISHED,
+    TAG_REQ_HOTEL = 1,
+    TAG_REQ_GUIDE = 2,
+    TAG_ACK_HOTEL = 4,
+    TAG_ACK_GUIDE = 8,
+    TAG_RELEASE_HOTEL = 16,
+    TAG_RELEASE_GUIDE = 32,
+    TAG_FINISHED = 64,
 } Tag;
 
 

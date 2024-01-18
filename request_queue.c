@@ -25,6 +25,7 @@ void dequeue(Queue** head_ref) {
 
     Queue* removed_head = *head_ref;
     *head_ref = (*head_ref)->next;
+    
     free(removed_head->data);
     free(removed_head);
 }
@@ -55,9 +56,9 @@ void dequeue_matching(Queue** head_ref, void* to_find, Comparison match_func) {
 
 
 bool compare_packet(PacketData* rec_a, PacketData* rec_b) {
-    if (rec_a->ts < rec_b->ts)
+    if (rec_a->ts > rec_b->ts)
         return true;
-    if (rec_a->ts == rec_b->ts && rec_a->source < rec_b->source)
+    if (rec_a->ts == rec_b->ts && rec_a->source > rec_b->source)
         return true;
     return false;
 }

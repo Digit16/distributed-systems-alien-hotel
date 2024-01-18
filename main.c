@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include <unistd.h>
 #include <signal.h>
+#include <limits.h>
 
 #include "request_queue.h"
 #include "utils.h"
@@ -84,7 +85,7 @@ void send_packet_range(int from_rank, int to_rank, Tag tag) {
 
 // send packet to single process
 void send_packet(int dest, Tag tag) {
-    send_packet_range(dest, dest, tag);
+    send_packet_range(dest, dest+1, tag);
 }
 
 
@@ -103,7 +104,11 @@ PacketData recv_packet() {
     int v_ts;
     MPI_Unpack(recv_buffer, buffer_size, &position, &s_ts, 1, MPI_INT, MPI_COMM_WORLD);
     scalar_ts = MAX(scalar_ts, s_ts) + 1;
+    DEBUG("%d, %d: received message from %d with ts: %d, [%d, %d, %d, %d]", scalar_ts,rank, status.MPI_SOURCE, s_ts,
+    last_received_scalar_ts[0], last_received_scalar_ts[1], last_received_scalar_ts[2], last_received_scalar_ts[3]);
+
     last_received_scalar_ts[status.MPI_SOURCE] = scalar_ts;
+
 
     ++vector_ts[rank];
     for (int i = 0; i < size; ++i) {
@@ -152,6 +157,9 @@ bool can_enter_hotel(HotelInfo hotel) {
 }
 
 void mark_hotel_entry(int process_rank, int hotel_idx) {
+
+    // DEBUG("%d: process %d, enters hotel %d", rank, process_rank, hotel_idx);
+
     hotel_info[hotel_idx].rooms_occupied++;
     hotel_info[hotel_idx].last_process_type = process_type;
 
@@ -160,8 +168,12 @@ void mark_hotel_entry(int process_rank, int hotel_idx) {
 
 void mark_hotel_departure(int process_rank) {
 
+    
     // check in which hotel is the process
     int hotel_idx = hotel_bookings[process_rank];
+
+    // DEBUG("%d: process %d, leaves hotel %d", rank, process_rank, hotel_idx);
+
     hotel_bookings[process_rank] = -1;
     hotel_info[hotel_idx].rooms_occupied--;
     if (hotel_info[hotel_idx].rooms_occupied == 0) {
@@ -172,25 +184,42 @@ void mark_hotel_departure(int process_rank) {
 
 
 void manage_hotel() {
+    
 
-    int min_ts = 0;
-    for (size_t i = 0; i < size; ++i) {
+    int min_ts = last_received_scalar_ts[0];
+    for (size_t i = 1; i < size; ++i) {
         min_ts = MIN(min_ts, last_received_scalar_ts[i]);
     }
 
+    Queue* skip_start = NULL;
     Queue* head = hotel_requests;
 
-    
+    // DEBUG("%d, %d: manage hotel start with min_ts %d [%d, %d, %d, %d]", scalar_ts, rank, min_ts, last_received_scalar_ts[0], last_received_scalar_ts[1], last_received_scalar_ts[2], last_received_scalar_ts[3]);
+    // DEBUG("%d: head ts is %d", rank, head != NULL ? ((PacketData*)head->data)->ts : -1);
+
+    Queue* test_head = hotel_requests;
+
+    while (test_head != NULL) {
+        DEBUG("%d, %d: HOTELS_QUEUE %d %d %d", scalar_ts, rank, ((PacketData*)test_head->data)->source, ((PacketData*)test_head->data)->tag, ((PacketData*)test_head->data)->ts);
+
+        test_head = test_head->next;
+    }
+
+    bool skipped = false;
+
     while (head != NULL && ((PacketData*)head->data)->ts <= min_ts) {
+        // DEBUG("%d, %d: hotel tag %d", scalar_ts, rank, ((PacketData*)head->data)->tag);
+
         if (((PacketData*)head->data)->tag == TAG_REQ_HOTEL) {
-            
+            // DEBUG("%d: manage hotel request", rank);
             bool entered_hotel = false;
 
             // loop over all hotels
             for (size_t hotel_idx = 0; hotel_idx < hotels_capacity; ++hotel_idx) {
-                
+                // DEBUG("%d: hotel %lu has %d guests", rank, hotel_idx, hotel_info[hotel_idx].rooms_occupied);
                 // check if entry condition was met
                 if (can_enter_hotel(hotel_info[hotel_idx])) {
+                    // DEBUG("%d: process %d enters hotel %lu", rank, ((PacketData*)head->data)->source, hotel_idx);
 
                     // mark entry to hotel in data structures
                     mark_hotel_entry(((PacketData*)head->data)->source, hotel_idx);
@@ -212,10 +241,13 @@ void manage_hotel() {
             }
 
             if (!entered_hotel) {
-                return;
+                skipped = true;
+                skip_start = head;
+                head = head->next;
             }
             
         } else if (((PacketData*)head->data)->tag == TAG_RELEASE_HOTEL) {
+            // DEBUG("%d: manage hotel release", rank);
 
             // mark departure from hotel in data structures
             mark_hotel_departure(((PacketData*)head->data)->source);
@@ -223,24 +255,35 @@ void manage_hotel() {
             // TODO: if any requests were skipped check if they can enter now
 
             dequeue(&head);
+            // DEBUG("%d: manage hotel release [removed from queue]", rank);
+            
+            if (skipped) {
+                skipped = false;
+                head = skip_start;
+            }
         } else {
             // TODO: add error message
         }
     }
 
+    // Queue* head = hotel_requests;
+    hotel_requests = head;
 }
 
 
 void manage_guide() {
 
+    // DEBUG("%d: manage guide", rank);
+
     int guide_queue_position = 0;
     Queue* head = guide_requests;
 
     while (head != NULL && guide_queue_position < num_of_guides) {
-
+        
         // check if our process (source == rank) is in queue
         if ( ((PacketData*)head->data)->source == rank ) {
             pthread_mutex_lock(&signal_guard);
+            // DEBUG("%d: getting guide!", rank);
             can_enter_guide_section = true;
             pthread_cond_signal(&signal_cond);
             pthread_mutex_unlock(&signal_guard);
@@ -251,6 +294,8 @@ void manage_guide() {
         guide_queue_position++;
         head = head->next;
     }
+
+    // DEBUG("%d: finished manage guide", rank);
 }
 
 
@@ -262,28 +307,34 @@ void* alien_listener_loop(void* arg) {
 
         switch (received_packet_data.tag) {
             case TAG_REQ_HOTEL:
+                // DEBUG("%d, %d: Received TAG_REQ_HOTEL", scalar_ts, rank);
                 enqueue_packet(&hotel_requests, received_packet_data);
                 send_packet(received_packet_data.source, TAG_ACK_HOTEL);
                 break;
             case TAG_REQ_GUIDE:
+                // DEBUG("%d, %d: Received TAG_REQ_GUIDE", scalar_ts, rank);
                 enqueue_packet(&guide_requests, received_packet_data);
                 send_packet(received_packet_data.source, TAG_ACK_GUIDE);
                 break;
             case TAG_RELEASE_HOTEL:
+                // DEBUG("%d, %d: Received TAG_RELEASE_HOTEL", scalar_ts, rank);
                 enqueue_packet(&hotel_requests, received_packet_data);
+                send_packet(received_packet_data.source, TAG_ACK_HOTEL);
                 break;
             case TAG_RELEASE_GUIDE:
+                // DEBUG("%d, %d: Received TAG_RELEASE_GUIDE", scalar_ts, rank);
                 dequeue_matching(&guide_requests, &received_packet_data.source, (Comparison)match_packet_source);
                 break;
             case TAG_FINISHED:
+                DEBUG("%d, %d: Received TAG_FINISHED", scalar_ts, rank);
                 ++finished_counter;
                 break;
             case TAG_ACK_HOTEL:
             case TAG_ACK_GUIDE:
-                // ignore
+                // DEBUG("%d, %d: Received TAG_ACK...", scalar_ts, rank);
                 break;
             default:
-                // TODO: error
+                ERROR("%d, %d: RECEIVED INVALID PACKET", scalar_ts, rank);
         }
 
 
@@ -337,6 +388,7 @@ void* alien_loop(void* arg) {
 
         // Request hotel
         can_enter_hotel_section = false;
+        DEBUG("%d, %d: Sending TAG_REQ_HOTEL", scalar_ts, rank);
         send_packet_range(0, size, TAG_REQ_HOTEL);
         change_state(WAIT_HOTEL);
 
@@ -349,11 +401,11 @@ void* alien_loop(void* arg) {
         change_state(INSECTION_HOTEL);
         sleep(1);
 
+        // INFO("%d: requesting guide!", rank);
         // Request guide
         can_enter_hotel_section = false;
         send_packet_range(0, num_of_purple_aliens + num_of_blue_aliens, TAG_REQ_GUIDE);
         change_state(WAIT_GUIDE);
-
         // Wait for acceptance and enter hotel
         pthread_mutex_lock(&signal_guard);
         while (!can_enter_guide_section) pthread_cond_wait(&signal_cond, &signal_guard);
@@ -361,6 +413,9 @@ void* alien_loop(void* arg) {
 
         // Wait with guide (sightseeing)
         change_state(INSECTION_GUIDE);
+
+        INFO("%d: having guide!", rank);
+
         sleep(1);
 
 
@@ -422,7 +477,7 @@ bool comp_int(int* a, int* b) {
 }
 
 
-int main(void) {
+int main_test(void) {
     Queue* items = NULL;
 
     int a = 1, b = 2, c = 3, d = 4;
@@ -447,14 +502,14 @@ int main(void) {
 }
 
 
-int main2(int argc, char** argv) {
+int main(int argc, char** argv) {
 
     MPI_Init(&argc, &argv);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
     if (argc != 7) {
-        MAIN_ERROR("Usage: %s <purple_aliens> <blue_aliens> <cleaners> <hotels> <hotel_capacity> <guides>\n", argv[0]);
+        MAIN_ERROR("Usage: %s <purple_aliens> <blue_aliens> <cleaners> <hotels> <hotel_capacity> <guides>", argv[0]);
         MPI_Finalize();
         return EXIT_FAILURE;
     }
@@ -465,13 +520,13 @@ int main2(int argc, char** argv) {
         sscanf(argv[4], "%d", &num_of_hotels)         != 1 ||
         sscanf(argv[5], "%d", &hotels_capacity) != 1 ||
         sscanf(argv[6], "%d", &num_of_guides) != 1) {
-        MAIN_ERROR("Error: Please provide valid integers.\n");
+        MAIN_ERROR("Error: Please provide valid integers.");
         MPI_Finalize();
         return EXIT_FAILURE;
     }
 
     if (num_of_purple_aliens < 0 || num_of_blue_aliens < 0 || num_of_cleaners < 0 || num_of_hotels < 0 || hotels_capacity < 0 || num_of_guides < 0) {
-        MAIN_ERROR("Error: Please provide non-negative integers.\n");
+        MAIN_ERROR("Error: Please provide non-negative integers.");
         MPI_Finalize();
         return EXIT_FAILURE;
     }
@@ -479,33 +534,33 @@ int main2(int argc, char** argv) {
     const int num_of_processes = num_of_purple_aliens + num_of_blue_aliens + num_of_cleaners;
 
     if (num_of_processes > size) {
-        MAIN_ERROR("Error: The number of processes available (%d) is insufficient, expecting %d processes.\n", size, num_of_processes);
+        MAIN_ERROR("Error: The number of processes available (%d) is insufficient, expecting %d processes.", size, num_of_processes);
         MPI_Finalize();
         return EXIT_FAILURE;
     } else if (num_of_processes < size) {
-        MAIN_ERROR("Warning: Excess processes detected. Currently %d processes, but only %d processes are expected. %d processes will be inactive.\n",
+        MAIN_ERROR("Warning: Excess processes detected. Currently %d processes, but only %d processes are expected. %d processes will be inactive.",
                     size, num_of_processes, size - num_of_processes);
     }
 
     // Ensure that initialisation Errors/Warning are displayed on top
-    MPI_Barrier(MPI_COMM_WORLD);
+    // MPI_Barrier(MPI_COMM_WORLD);
 
     process_type = get_process_type(rank);
-
     switch(process_type) {
     case PROCESS_PURPLE_ALIEN:
-        DEBUG("Process %d becomes a purple alien.\n", rank); break;
+        DEBUG("Process %d becomes a pnurple alien.", rank); break;
     case PROCESS_BLUE_ALIEN:
-        DEBUG("Process %d becomes a blue alien.\n", rank); break;
+        DEBUG("Process %d becomes a blue alien.", rank); break;
     case PROCESS_CLEANER:
-        DEBUG("Process %d becomes a cleaner.\n", rank); break;
+        DEBUG("Process %d becomes a cleaner.", rank); break;
     default:
-        DEBUG("Process %d finishes due to being inactive.\n", rank);
+        DEBUG("Process %d finishes due to being inactive.", rank);
         MPI_Finalize();
         return EXIT_SUCCESS;
     }
-
-
+    
+    MPI_Barrier(MPI_COMM_WORLD);
+    
     // Overwrite size with number of active processes
     size = num_of_processes;
 
@@ -527,21 +582,23 @@ int main2(int argc, char** argv) {
         hotel_bookings[i] = -1;
     }
 
-    // hotel_requests = (RequestQueue){malloc(size * sizeof(RequestInfo)), 0};
-    // guide_requests = (RequestQueue){malloc((purple_aliens + blue_aliens) * sizeof(RequestInfo)), 0};
-
     pthread_t main_thread, listener_thread;
 
-    // if (process_type == ALIEN_BLUE || process_type == ALIEN_PURPLE) {
-    //     pthread_create(&main_thread, NULL, alien_loop, NULL);
-    // } else {
-    //     pthread_create(&main_thread, NULL, cleaner_loop, NULL);
-    // }
-    // pthread_create(&listener_thread, NULL, listener_loop, NULL);
+    DEBUG("starting threads");
+
+    if (process_type == PROCESS_BLUE_ALIEN || process_type == PROCESS_PURPLE_ALIEN) {
+        pthread_create(&main_thread, NULL, alien_loop, NULL);
+        pthread_create(&listener_thread, NULL, alien_listener_loop, NULL);
+    } else {
+        pthread_create(&main_thread, NULL, cleaner_loop, NULL);
+        pthread_create(&listener_thread, NULL, cleaner_listener_loop, NULL);
+    }
 
 
-    // pthread_join(main_thread, NULL);
-    // pthread_join(listener_thread, NULL);
+    pthread_join(main_thread, NULL);
+    pthread_join(listener_thread, NULL);
+
+    MPI_Barrier(MPI_COMM_WORLD);
 
 
     MPI_Finalize();
