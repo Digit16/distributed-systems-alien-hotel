@@ -104,10 +104,10 @@ PacketData recv_packet() {
     int v_ts;
     MPI_Unpack(recv_buffer, buffer_size, &position, &s_ts, 1, MPI_INT, MPI_COMM_WORLD);
     scalar_ts = MAX(scalar_ts, s_ts) + 1;
-    DEBUG("%d, %d: received message from %d with ts: %d, [%d, %d, %d, %d]", scalar_ts,rank, status.MPI_SOURCE, s_ts,
-    last_received_scalar_ts[0], last_received_scalar_ts[1], last_received_scalar_ts[2], last_received_scalar_ts[3]);
+    // DEBUG("%d, %d: received message from %d with ts: %d, [%d, %d, %d, %d]", scalar_ts,rank, status.MPI_SOURCE, s_ts,
+    // last_received_scalar_ts[0], last_received_scalar_ts[1], last_received_scalar_ts[2], last_received_scalar_ts[3]);
 
-    last_received_scalar_ts[status.MPI_SOURCE] = scalar_ts;
+    last_received_scalar_ts[status.MPI_SOURCE] = s_ts;
 
 
     ++vector_ts[rank];
@@ -275,15 +275,22 @@ void manage_guide() {
 
     // DEBUG("%d: manage guide", rank);
 
+    int min_ts = last_received_scalar_ts[0];
+    for (size_t i = 1; i < size; ++i) {
+        min_ts = MIN(min_ts, last_received_scalar_ts[i]);
+    }
+
+
     int guide_queue_position = 0;
     Queue* head = guide_requests;
 
-    while (head != NULL && guide_queue_position < num_of_guides) {
+
+    while (head != NULL && ((PacketData*)head->data)->ts <= min_ts && guide_queue_position < num_of_guides) {
         
         // check if our process (source == rank) is in queue
         if ( ((PacketData*)head->data)->source == rank ) {
+            // DEBUG("[%d, %d]: my requests in on %d position with %d ts while min_ts is %d", scalar_ts, rank, guide_queue_position, ((PacketData*)head->data)->ts, min_ts);
             pthread_mutex_lock(&signal_guard);
-            // DEBUG("%d: getting guide!", rank);
             can_enter_guide_section = true;
             pthread_cond_signal(&signal_cond);
             pthread_mutex_unlock(&signal_guard);
@@ -377,6 +384,29 @@ void* cleaner_listener_loop(void* arg) {
 
 
 
+void* guide_test_loop(void* arg) {
+
+    for (int i = 0; i < 10; i++) {
+        
+        INFO("[%d, %d]: requesting guide!", scalar_ts, rank);
+        can_enter_guide_section = false;
+        send_packet_range(0, num_of_purple_aliens + num_of_blue_aliens, TAG_REQ_GUIDE);
+
+        change_state(WAIT_GUIDE);
+        pthread_mutex_lock(&signal_guard);
+        while (!can_enter_guide_section) pthread_cond_wait(&signal_cond, &signal_guard);
+        pthread_mutex_unlock(&signal_guard);
+
+        change_state(INSECTION_GUIDE);
+        INFO("[%d, %d]: having guide!", scalar_ts, rank);
+        sleep(40);
+        INFO("[%d, %d]: releasing guide!", scalar_ts, rank);
+        send_packet_range(0, num_of_purple_aliens + num_of_blue_aliens, TAG_RELEASE_GUIDE);
+        sleep(20);
+    }
+
+}
+
 void* alien_loop(void* arg) {
 
     // each process repeats process n times
@@ -403,7 +433,7 @@ void* alien_loop(void* arg) {
 
         // INFO("%d: requesting guide!", rank);
         // Request guide
-        can_enter_hotel_section = false;
+        can_enter_guide_section = false;
         send_packet_range(0, num_of_purple_aliens + num_of_blue_aliens, TAG_REQ_GUIDE);
         change_state(WAIT_GUIDE);
         // Wait for acceptance and enter hotel
@@ -420,8 +450,9 @@ void* alien_loop(void* arg) {
 
 
         // Release resources
-        send_packet_range(0, size, TAG_RELEASE_HOTEL);
         send_packet_range(0, num_of_purple_aliens + num_of_blue_aliens, TAG_RELEASE_GUIDE);
+        send_packet_range(0, size, TAG_RELEASE_HOTEL);
+        
         change_state(REST);
 
     }
@@ -543,18 +574,18 @@ int main(int argc, char** argv) {
     }
 
     // Ensure that initialisation Errors/Warning are displayed on top
-    // MPI_Barrier(MPI_COMM_WORLD);
+    MPI_Barrier(MPI_COMM_WORLD);
 
     process_type = get_process_type(rank);
     switch(process_type) {
     case PROCESS_PURPLE_ALIEN:
-        DEBUG("Process %d becomes a pnurple alien.", rank); break;
+        INFO("Process %d becomes a pnurple alien.", rank); break;
     case PROCESS_BLUE_ALIEN:
-        DEBUG("Process %d becomes a blue alien.", rank); break;
+        INFO("Process %d becomes a blue alien.", rank); break;
     case PROCESS_CLEANER:
-        DEBUG("Process %d becomes a cleaner.", rank); break;
+        INFO("Process %d becomes a cleaner.", rank); break;
     default:
-        DEBUG("Process %d finishes due to being inactive.", rank);
+        INFO("Process %d finishes due to being inactive.", rank);
         MPI_Finalize();
         return EXIT_SUCCESS;
     }
@@ -564,8 +595,8 @@ int main(int argc, char** argv) {
     // Overwrite size with number of active processes
     size = num_of_processes;
 
-    vector_ts = calloc(size * sizeof(int), 0);
-    last_received_scalar_ts = calloc(size * sizeof(int), 0);
+    vector_ts = calloc(size, sizeof(int));
+    last_received_scalar_ts = calloc(size, sizeof(int));
 
     buffer_size = (1 + size) * sizeof(int) + sizeof(PacketData);
     send_buffer = malloc(buffer_size);
@@ -587,7 +618,7 @@ int main(int argc, char** argv) {
     DEBUG("starting threads");
 
     if (process_type == PROCESS_BLUE_ALIEN || process_type == PROCESS_PURPLE_ALIEN) {
-        pthread_create(&main_thread, NULL, alien_loop, NULL);
+        pthread_create(&main_thread, NULL, guide_test_loop, NULL);
         pthread_create(&listener_thread, NULL, alien_listener_loop, NULL);
     } else {
         pthread_create(&main_thread, NULL, cleaner_loop, NULL);
