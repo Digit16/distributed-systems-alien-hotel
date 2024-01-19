@@ -162,6 +162,11 @@ void check_for_hotel(int hotel_idx) {
     int hotel_queue_position = 0;
     Queue* head = hotel_requests[hotel_idx];
 
+    DEBUG("Hotel queue state:");
+    while(head != NULL) {
+        DEBUG("source: %d, ts: %d", ((PacketData*)head->data)->source, ((PacketData*)head->data)->ts);
+    }
+
     head = hotel_requests[hotel_idx];
 
     while (head != NULL && ((PacketData*)head->data)->ts <= min_ts && hotel_queue_position < hotels_capacity) {

@@ -10,13 +10,6 @@ typedef struct Queue {
 } Queue;
 
 
-// typedef struct PacketQueue {
-//     PacketData packet;
-//     struct PacketQueue* next;
-// } PacketQueue;
-
-
-
 typedef bool (*Comparison)(void*, void*);
 
 // priority_comp should return true if first argument has higher or equal priority than the second argument
