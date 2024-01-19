@@ -38,16 +38,6 @@ typedef enum Tag {
     TAG_FINISHED = 64,
 } Tag;
 
-
-typedef enum State {
-    REST,                // Waiting
-    WAIT_HOTEL,          // Requesting Hotel
-    INSECTION_HOTEL,     // In section Hotel
-    WAIT_GUIDE,          // Requesting Guide
-    INSECTION_GUIDE,     // In section Hotel and in section Guide
-} State;
-
-
 typedef enum ProcessType {
     PROCESS_NONE         = 0,
     PROCESS_PURPLE_ALIEN = 1,

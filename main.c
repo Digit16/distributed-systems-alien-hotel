@@ -11,7 +11,7 @@
 #include "request_queue.h"
 #include "utils.h"
 
-#define NUMBER_OF_ROUNDS 2
+#define NUMBER_OF_ROUNDS 1
 
 // number of processes
 extern int num_of_purple_aliens, num_of_blue_aliens, num_of_cleaners;
