@@ -46,6 +46,7 @@ typedef enum ProcessType {
     PROCESS_CLEANER      = 4,
 } ProcessType;
 
+char* process_to_text(ProcessType pt);
 
 typedef struct HotelInfo {
     int rooms_occupied;
@@ -58,21 +59,13 @@ typedef struct PacketData {
     int tag;
     int ts;
     ProcessType process_type;
+    int resource_idx;
 } PacketData;
 
-
-// typedef struct HotelRecord {
-//     int source;                 // process requesting or releasing
-//     int ts;                     // received timestamp
-//     Tag tag;                    // REQ_HOTEL or RELEASE_HOTEL
-//     ProcessType process_type;   // type of the process
-// } HotelRecord;
-
-// typedef struct GuideRecord {
-//     int source;                 // process requesting or releasing
-//     int ts;                     // received timestamp
-// } GuideRecord;
-
+typedef struct PayloadData {
+    int ts;
+    int hotel_idx;
+} PayloadData;
 
 
 #endif
