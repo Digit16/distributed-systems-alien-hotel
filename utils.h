@@ -13,10 +13,19 @@
         _a < _b ? _a : _b; })
 
 
+
+#define GET_COLOR() (process_type == PROCESS_CLEANER ? "[0;37m" : (process_type == PROCESS_BLUE_ALIEN ? "[0;34m" : (process_type == PROCESS_PURPLE_ALIEN ? "[0;35m" : "[0;31m")))
+
 #define MAIN_ERROR(...) if (rank == 0) ({fprintf(stderr, __VA_ARGS__); printf("\n"); })
-#define ERROR(...) ({ printf("ERROR: "); printf(__VA_ARGS__); printf("\n"); })
-#define DEBUG(...) ({ printf("DEBUG: "); printf(__VA_ARGS__); printf("\n"); })
-#define INFO(...) ({ printf("INFO: "); printf(__VA_ARGS__); printf("\n"); })
+#define ERROR(...) ({ printf("%c%sERROR: [%d, %d]: ", 27, GET_COLOR(), scalar_ts, rank); printf(__VA_ARGS__); printf("\n"); })
+// #define DEBUG(...) ({ printf("DEBUG: [%d, %d]: ", scalar_ts, rank); printf(__VA_ARGS__); printf("\n"); })
+#define INFO(...) ({ printf("%c%sINFO: [%d, %d]: ", 27, GET_COLOR(), scalar_ts, rank); printf(__VA_ARGS__); printf("\n"); })
+
+
+// #define ERROR(...)
+#define DEBUG(...)
+// #define INFO(...)
+
 
 
 typedef enum Tag {

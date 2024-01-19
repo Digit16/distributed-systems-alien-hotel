@@ -11,31 +11,32 @@
 #include "request_queue.h"
 #include "utils.h"
 
+#define NUMBER_OF_ROUNDS 2
+
 // number of processes
-int num_of_purple_aliens, num_of_blue_aliens, num_of_cleaners;
+extern int num_of_purple_aliens, num_of_blue_aliens, num_of_cleaners;
 
 // number of resources
-int num_of_hotels, hotels_capacity, num_of_guides;
+extern int num_of_hotels, hotels_capacity, num_of_guides;
 
 // current state of the process
-State state = REST;
-ProcessType process_type;
+extern ProcessType process_type;
 
 // process id and number of processes
-int rank;
-int size;
+extern int rank;
+extern int size;
 
-int picked_hotel = 0;
+extern int picked_hotel;
 
 // clocks of a current process
-int scalar_ts = 0;
+extern int scalar_ts;
 
 // array of last received timestamps for every process
-int* last_received_scalar_ts;
+extern int* last_received_scalar_ts;
 
 // flags for entering critical sections
-bool can_enter_hotel_section = false;
-bool can_enter_guide_section = false;
+extern bool can_enter_hotel_section;
+extern bool can_enter_guide_section;
 
 
 pthread_mutex_t clock_guard = PTHREAD_MUTEX_INITIALIZER;
@@ -129,16 +130,6 @@ PacketData recv_packet() {
     };
 }
 
-
-
-void change_state(State new_state) {
-    pthread_mutex_lock(&state_guard);
-    // TODO: add debug message
-    state = new_state;
-    pthread_mutex_unlock(&state_guard);
-}
-
-
 void signal_enter_hotel() {
     pthread_mutex_lock(&signal_guard);
     can_enter_hotel_section = true;
@@ -228,33 +219,37 @@ void* alien_listener_loop(void* arg) {
 
         switch (received_packet_data.tag) {
             case TAG_REQ_HOTEL:
-                // DEBUG("%d, %d: Received TAG_REQ_HOTEL", scalar_ts, rank);
+                DEBUG("received TAG_REQ_HOTEL from %d", received_packet_data.source);
                 enqueue_packet(&hotel_requests[received_packet_data.resource_idx], received_packet_data);
+                DEBUG("sending TAG_ACK_HOTEL to %d", received_packet_data.source);
                 send_packet(received_packet_data.source, TAG_ACK_HOTEL, -1);
                 break;
             case TAG_REQ_GUIDE:
-                // DEBUG("%d, %d: Received TAG_REQ_GUIDE", scalar_ts, rank);
+                DEBUG("received TAG_REQ_GUIDE from %d", received_packet_data.source);
                 enqueue_packet(&guide_requests, received_packet_data);
+                DEBUG("sending TAG_ACK_GUIDE to %d", received_packet_data.source);
                 send_packet(received_packet_data.source, TAG_ACK_GUIDE, -1);
                 break;
             case TAG_RELEASE_HOTEL:
-                // DEBUG("[%d, %d]: Received TAG_RELEASE_HOTEL", scalar_ts, rank);
+                DEBUG("received TAG_RELEASE_HOTEL from %d", received_packet_data.source);
                 dequeue_matching(&hotel_requests[received_packet_data.resource_idx], &received_packet_data.source, (Comparison)match_packet_source);
                 break;
             case TAG_RELEASE_GUIDE:
-                // DEBUG("%d, %d: Received TAG_RELEASE_GUIDE", scalar_ts, rank);
+                DEBUG("received TAG_RELEASE_GUIDE from %d", received_packet_data.source);
                 dequeue_matching(&guide_requests, &received_packet_data.source, (Comparison)match_packet_source);
                 break;
             case TAG_FINISHED:
-                DEBUG("%d, %d: Received TAG_FINISHED", scalar_ts, rank);
+                DEBUG("received TAG_FINISHED from %d", received_packet_data.source);
                 ++finished_counter;
                 break;
             case TAG_ACK_HOTEL:
+                DEBUG("received TAG_ACK_HOTEL from %d", received_packet_data.source);
+                break;
             case TAG_ACK_GUIDE:
-                // DEBUG("%d, %d: Received TAG_ACK...", scalar_ts, rank);
+                DEBUG("received TAG_ACK_GUIDE from %d", received_packet_data.source);
                 break;
             default:
-                ERROR("%d, %d: RECEIVED INVALID PACKET", scalar_ts, rank);
+                ERROR("RECEIVED INVALID PACKET from %d", received_packet_data.source);
         }
 
         check_for_hotel(picked_hotel);
@@ -268,26 +263,29 @@ void* alien_listener_loop(void* arg) {
 void* cleaner_listener_loop(void* arg) {
     int finished_counter = 0;
 
-    // DEBUG("cleaner_listener_loop");
-
     while(finished_counter < size) {
         PacketData received_packet_data = recv_packet();
 
         switch (received_packet_data.tag) {
             case TAG_REQ_HOTEL:
+                DEBUG("received TAG_REQ_HOTEL from %d", received_packet_data.source);
                 enqueue_packet(&hotel_requests[received_packet_data.resource_idx], received_packet_data);
+                DEBUG("sending TAG_ACK_HOTEL to %d", received_packet_data.source);
                 send_packet(received_packet_data.source, TAG_ACK_HOTEL, -1);
                 break;
             case TAG_RELEASE_HOTEL:
+                DEBUG("received TAG_RELEASE_HOTEL from %d", received_packet_data.source);
                 dequeue_matching(&hotel_requests[received_packet_data.resource_idx], &received_packet_data.source, (Comparison)match_packet_source);
                 break;
             case TAG_FINISHED:
+                DEBUG("received TAG_FINISHED from %d", received_packet_data.source);
                 ++finished_counter;
                 break;
             case TAG_ACK_HOTEL:
+                DEBUG("received TAG_ACK_HOTEL from %d", received_packet_data.source);
                 break;
             default:
-                // TODO: error
+                ERROR("RECEIVED INVALID PACKET from %d", received_packet_data.source);
         }
 
         check_for_hotel(picked_hotel);
@@ -297,40 +295,39 @@ void* cleaner_listener_loop(void* arg) {
 }
 
 
-
 void* alien_loop(void* arg) {
 
-    for (int i = 0; i < 1; i++) {
+    for (int i = 0; i < NUMBER_OF_ROUNDS; i++) {
         
         picked_hotel = rand() % num_of_hotels;
 
         // requesting hotel
-        INFO("[%d, %d]: requesting hotel %d!", scalar_ts, rank, picked_hotel);
+        INFO("requesting hotel %d!", picked_hotel);
         can_enter_hotel_section = false;
         send_packet_range(0, size, TAG_REQ_HOTEL, picked_hotel);
         wait_hotel();
 
         // being in hotel
-        INFO("[%d, %d]: entering hotel %d!", scalar_ts, rank, picked_hotel);
+        INFO("entering hotel %d!", picked_hotel);
         sleep(4);
 
         // requesting guide
-        INFO("[%d, %d]: requesting guide!", scalar_ts, rank);
+        INFO("requesting guide!");
         can_enter_guide_section = false;
         send_packet_range(0, num_of_purple_aliens + num_of_blue_aliens, TAG_REQ_GUIDE, -1);
         wait_guide();
 
         // having a guide
-        INFO("[%d, %d]: having guide!", scalar_ts, rank);
+        INFO("having guide!");
         sleep(4);
 
         // realising guide
-        INFO("[%d, %d]: releasing guide!", scalar_ts, rank);
+        INFO("releasing guide!");
         send_packet_range(0, num_of_purple_aliens + num_of_blue_aliens, TAG_RELEASE_GUIDE, -1);
         sleep(2);
 
         // realising hotel
-        INFO("[%d, %d]: leaving hotel %d!", scalar_ts, rank, picked_hotel);
+        INFO("leaving hotel %d!", picked_hotel);
         send_packet_range(0, size, TAG_RELEASE_HOTEL, picked_hotel);
         sleep(2);
     }
@@ -340,124 +337,30 @@ void* alien_loop(void* arg) {
 }
 
 
-
-
-// void* alien_loop(void* arg) {
-
-//     // each process repeats process n times
-//     for (int i = 0; i < 10; i++) {
-
-//         // Rest idle
-//         change_state(REST);
-//         sleep(1);
-
-//         // Request hotel
-//         can_enter_hotel_section = false;
-//         DEBUG("%d, %d: Sending TAG_REQ_HOTEL", scalar_ts, rank);
-//         send_packet_range(0, size, TAG_REQ_HOTEL, -1);
-//         change_state(WAIT_HOTEL);
-
-//         // Wait for acceptance and enter hotel
-//         pthread_mutex_lock(&signal_guard);
-//         while (!can_enter_hotel_section) pthread_cond_wait(&signal_cond, &signal_guard);
-//         pthread_mutex_unlock(&signal_guard);
-        
-//         // Wait inside of hotel
-//         change_state(INSECTION_HOTEL);
-//         sleep(1);
-
-//         // INFO("%d: requesting guide!", rank);
-//         // Request guide
-//         can_enter_guide_section = false;
-//         send_packet_range(0, num_of_purple_aliens + num_of_blue_aliens, TAG_REQ_GUIDE, -1);
-//         change_state(WAIT_GUIDE);
-//         // Wait for acceptance and enter hotel
-//         pthread_mutex_lock(&signal_guard);
-//         while (!can_enter_guide_section) pthread_cond_wait(&signal_cond, &signal_guard);
-//         pthread_mutex_unlock(&signal_guard);
-
-//         // Wait with guide (sightseeing)
-//         change_state(INSECTION_GUIDE);
-
-//         INFO("%d: having guide!", rank);
-
-//         sleep(1);
-
-
-//         // Release resources
-//         send_packet_range(0, num_of_purple_aliens + num_of_blue_aliens, TAG_RELEASE_GUIDE, -1);
-//         send_packet_range(0, size, TAG_RELEASE_HOTEL, -1);
-        
-//         change_state(REST);
-
-//     }
-
-//     send_packet_range(0, size, TAG_FINISHED, -1);
-
-//     return NULL;
-// }
-
-
-
 void* cleaner_loop(void* arg) {
 
-    for (int i = 0; i < 1; i++) {
+    for (int i = 0; i < NUMBER_OF_ROUNDS; i++) {
         
         picked_hotel = rand() % num_of_hotels;
 
         // requesting hotel
-        INFO("[%d, %d]: requesting hotel %d!", scalar_ts, rank, picked_hotel);
+        INFO("requesting hotel %d!", picked_hotel);
         can_enter_hotel_section = false;
         send_packet_range(0, size, TAG_REQ_HOTEL, picked_hotel);
         wait_hotel();
 
         // being in hotel
-        INFO("[%d, %d]: entering hotel %d!", scalar_ts, rank, picked_hotel);
+        INFO("entering hotel %d!", picked_hotel);
         sleep(4);
 
         // realising hotel
-        INFO("[%d, %d]: leaving hotel %d!", scalar_ts, rank, picked_hotel);
+        INFO("leaving hotel %d!", picked_hotel);
         send_packet_range(0, size, TAG_RELEASE_HOTEL, picked_hotel);
         sleep(2);
     }
 
     send_packet_range(0, size, TAG_FINISHED, -1);
 
-}
-
-
-
-bool match_int(void* a, void* b) {
-    return *(int*)a == *(int*)b;
-}
-
-bool comp_int(int* a, int* b) {
-    return *a >= *b;
-}
-
-
-int main_test(void) {
-    Queue* items = NULL;
-
-    int a = 1, b = 2, c = 3, d = 4;
-    enqueue(&items, &d, (Comparison)comp_int);
-    enqueue(&items, &c, (Comparison)comp_int);
-    enqueue(&items, &a, (Comparison)comp_int);
-    enqueue(&items, &b, (Comparison)comp_int);
-    
-    
-    
-    
-    // printf("%d\n", *(int*)dequeue(&items));
-    // dequeue(&items);
-
-    // dequeue_matching(&items, &c, &match_int);
-
-    Queue* reqs = items;
-    while (reqs != NULL) {
-        printf("%d\n", *(int*)reqs->data);
-        reqs = reqs->next;
-    }
 }
 
 
@@ -536,7 +439,6 @@ int main(int argc, char** argv) {
         pthread_create(&main_thread, NULL, cleaner_loop, NULL);
         pthread_create(&listener_thread, NULL, cleaner_listener_loop, NULL);
     }
-
 
     pthread_join(main_thread, NULL);
     pthread_join(listener_thread, NULL);
