@@ -73,7 +73,7 @@ typedef struct PacketData {
 
 typedef struct PayloadData {
     int ts;
-    int hotel_idx;
+    int resource_idx;
 } PayloadData;
 
 

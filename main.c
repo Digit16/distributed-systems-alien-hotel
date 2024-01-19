@@ -81,7 +81,7 @@ void send_packet_range(int from_rank, int to_rank, Tag tag, int resource_idx) {
     int position = 0;
 
     PayloadData payload;
-    payload.hotel_idx = resource_idx;
+    payload.resource_idx = resource_idx;
     payload.ts = scalar_ts;
 
     // MPI_Pack(&scalar_ts, 1, MPI_INT, send_buffer, buffer_size, &position, MPI_COMM_WORLD);
@@ -126,7 +126,7 @@ PacketData recv_packet() {
         .process_type = get_process_type(status.MPI_SOURCE),
         .tag = status.MPI_TAG,
         .ts = payload.ts,
-        .resource_idx = payload.hotel_idx
+        .resource_idx = payload.resource_idx
     };
 }
 
