@@ -45,13 +45,6 @@ typedef enum ProcessType {
     PROCESS_CLEANER      = 4,
 } ProcessType;
 
-char* process_to_text(ProcessType pt);
-
-typedef struct HotelInfo {
-    int rooms_occupied;
-    ProcessType last_process_type;
-} HotelInfo;
-
 
 typedef struct PacketData {
     int source;
