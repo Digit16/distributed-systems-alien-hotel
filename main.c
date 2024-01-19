@@ -165,6 +165,7 @@ void check_for_hotel(int hotel_idx) {
     DEBUG("Hotel queue state:");
     while(head != NULL) {
         DEBUG("source: %d, ts: %d", ((PacketData*)head->data)->source, ((PacketData*)head->data)->ts);
+        head = head->next;
     }
 
     head = hotel_requests[hotel_idx];
